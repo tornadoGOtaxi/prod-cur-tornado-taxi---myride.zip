@@ -1,0 +1,301 @@
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { useAuth } from '../../context/AuthContext';
+import { useData } from '../../context/DataContext';
+import { Ride, RideStatus, EventType } from '../../types';
+import Button from '../../components/ui/Button';
+import { Card, CardHeader, CardContent, CardTitle, CardDescription } from '../../components/ui/Card';
+import { generateDriverReply } from '../../services/geminiService';
+import Input from '../../components/ui/Input';
+
+
+interface DriverDashboardProps {
+  navigate: (page: any) => void;
+}
+
+const DriverDashboard: React.FC<DriverDashboardProps> = ({ navigate }) => {
+  const { user, logout } = useAuth();
+  const { rides, users, rideActivityLogs, driverAvailabilities, setDriverAvailabilities, actions, messages } = useData();
+  const [currentTab, setCurrentTab] = useState('requests');
+  const [chatInputs, setChatInputs] = useState<{ [rideId: string]: string }>({});
+  const [suggestedReplies, setSuggestedReplies] = useState<{ [rideId: string]: string }>({});
+  const [isGenerating, setIsGenerating] = useState<{ [rideId: string]: boolean }>({});
+  const debounceTimeoutRef = useRef<number | null>(null);
+  const locationWatchId = useRef<number | null>(null);
+
+  const availability = driverAvailabilities.find(da => da.driver_id === user?.id);
+  
+  const toggleAvailability = () => {
+    if (!availability) return;
+    setDriverAvailabilities(prev => 
+        prev.map(da => da.id === availability.id ? {...da, is_available_now: !da.is_available_now} : da)
+    );
+  };
+  
+  const rideRequests = useMemo(() => rides.filter(r => r.status === RideStatus.REQUESTED), [rides]);
+  const myTrips = useMemo(() => rides.filter(r => r.assigned_driver_id === user?.id && ![RideStatus.COMPLETED, RideStatus.CANCELLED].includes(r.status)), [rides, user]);
+  const recentActivity = useMemo(() => rideActivityLogs.slice().sort((a,b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 10), [rideActivityLogs]);
+  
+  const acceptRide = (rideId: string) => {
+    if(!user) return;
+    actions.assignDriverToRide(rideId, user.id, user.id);
+  };
+
+  const updateTripStatus = (rideId: string, currentStatus: RideStatus) => {
+      if(!user) return;
+      let newStatus: RideStatus | null = null;
+      if (currentStatus === RideStatus.ASSIGNED) {
+          newStatus = RideStatus.EN_ROUTE_TO_PICKUP;
+      } else if (currentStatus === RideStatus.EN_ROUTE_TO_PICKUP) {
+          newStatus = RideStatus.PICKED_UP;
+      } else if (currentStatus === RideStatus.PICKED_UP || currentStatus === RideStatus.IN_PROGRESS) {
+          newStatus = RideStatus.COMPLETED;
+      }
+
+      if (newStatus) {
+          actions.updateRideStatus(rideId, newStatus, user.id);
+          // If ride is completed, stop sharing location
+          if(newStatus === RideStatus.COMPLETED){
+              const ride = myTrips.find(r => r.id === rideId);
+              if(ride && ride.is_sharing_location) stopLocationSharing(ride);
+          }
+      }
+  };
+
+  const getNextActionText = (status: RideStatus): string => {
+      switch(status) {
+          case RideStatus.ASSIGNED: return "I'm On My Way";
+          case RideStatus.EN_ROUTE_TO_PICKUP: return "Confirm Pickup";
+          case RideStatus.PICKED_UP:
+          case RideStatus.IN_PROGRESS: return "Confirm Dropoff";
+          default: return "No Action";
+      }
+  }
+
+  const startLocationSharing = (ride: Ride) => {
+    if (!user) return;
+    if (navigator.geolocation) {
+        actions.toggleRideLocationSharing(ride.id, true);
+        locationWatchId.current = navigator.geolocation.watchPosition(
+            (position) => {
+                actions.updateDriverLocation(user.id, position.coords.latitude, position.coords.longitude);
+            },
+            (error) => {
+                console.error("Geolocation error:", error);
+                stopLocationSharing(ride);
+            },
+            { enableHighAccuracy: true, timeout: 20000, maximumAge: 10000 }
+        );
+    } else {
+        alert("Geolocation is not supported by this browser.");
+    }
+  };
+
+  const stopLocationSharing = (ride: Ride) => {
+      if (locationWatchId.current !== null) {
+          navigator.geolocation.clearWatch(locationWatchId.current);
+          locationWatchId.current = null;
+      }
+      actions.toggleRideLocationSharing(ride.id, false);
+  };
+
+  useEffect(() => {
+    return () => {
+        if (locationWatchId.current !== null) {
+            navigator.geolocation.clearWatch(locationWatchId.current);
+        }
+    };
+  }, []);
+
+  const handleChatInputChange = (rideId: string, text: string) => {
+    setChatInputs(prev => ({ ...prev, [rideId]: text }));
+
+    if (debounceTimeoutRef.current) {
+        window.clearTimeout(debounceTimeoutRef.current);
+    }
+    
+    if (text.trim().length > 5) {
+        debounceTimeoutRef.current = window.setTimeout(() => {
+            generateSuggestion(rideId, text);
+        }, 500);
+    } else {
+        setSuggestedReplies(prev => ({...prev, [rideId]: ''}));
+    }
+  };
+
+  const applySuggestion = (rideId: string) => {
+    if(suggestedReplies[rideId]) {
+        setChatInputs(prev => ({...prev, [rideId]: suggestedReplies[rideId]}));
+        setSuggestedReplies(prev => ({...prev, [rideId]: ''}));
+    }
+  };
+
+  const handleSendMessage = (rideId: string) => {
+    const ride = myTrips.find(r => r.id === rideId);
+    if (!ride || !user || !chatInputs[ride.id]?.trim() || !ride.requester_user_id) return;
+
+    actions.addMessage({
+        ride_id: ride.id,
+        sender_id: user.id,
+        receiver_id: ride.requester_user_id,
+        message_text: chatInputs[ride.id],
+        is_system: false,
+    });
+    
+    setChatInputs(prev => ({...prev, [rideId]: ''}));
+    setSuggestedReplies(prev => ({...prev, [rideId]: ''}));
+  };
+  
+    const generateSuggestion = async (rideId: string, text: string) => {
+    setIsGenerating(prev => ({ ...prev, [rideId]: true }));
+    setSuggestedReplies(prev => ({...prev, [rideId]: ''}));
+    
+    // Find previous messages to add context
+    const rideMessages = messages.filter(m => m.ride_id === rideId);
+    const lastMessage = rideMessages.length > 0 ? rideMessages[rideMessages.length - 1].message_text : '';
+    const context = `Previous message from passenger: "${lastMessage}". My draft reply: "${text}"`
+    
+    const suggestion = await generateDriverReply(context);
+    
+    setSuggestedReplies(prev => ({ ...prev, [rideId]: suggestion }));
+    setIsGenerating(prev => ({ ...prev, [rideId]: false }));
+  };
+
+
+  return (
+    <div className="min-h-screen bg-gray-100 p-4 sm:p-6 lg:p-8">
+      <header className="flex flex-col sm:flex-row justify-between sm:items-center mb-8 gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-primary">Driver Dashboard</h1>
+          <p className="text-gray-600">Welcome, {user?.name}!</p>
+        </div>
+        <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+                <span className={`w-3 h-3 rounded-full ${availability?.is_available_now ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                <span>{availability?.is_available_now ? 'Available' : 'Unavailable'}</span>
+                <Button onClick={toggleAvailability} size="sm" variant="ghost">{availability?.is_available_now ? 'Go Offline' : 'Go Online'}</Button>
+            </div>
+            <Button onClick={() => { logout(); navigate('landing'); }} variant="danger">Sign Out</Button>
+        </div>
+      </header>
+
+      <div className="border-b border-gray-200 mb-6">
+        <nav className="-mb-px flex space-x-8" aria-label="Tabs">
+          <button onClick={() => setCurrentTab('requests')} className={`${currentTab === 'requests' ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}>Ride Requests ({rideRequests.length})</button>
+          <button onClick={() => setCurrentTab('trips')} className={`${currentTab === 'trips' ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}>My Trips ({myTrips.length})</button>
+          <button onClick={() => setCurrentTab('activity')} className={`${currentTab === 'activity' ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}>Activity Feed</button>
+        </nav>
+      </div>
+
+      <div>
+        {currentTab === 'requests' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {rideRequests.length > 0 ? rideRequests.map(ride => (
+                    <Card key={ride.id}>
+                        <CardHeader>
+                            <CardTitle>Ride #{ride.id.substring(5, 10)}</CardTitle>
+                            <CardDescription>{new Date(ride.ride_date_time).toLocaleString()}</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <p><strong>From:</strong> {ride.pickup_details}</p>
+                            <p><strong>To:</strong> {ride.dropoff_details}</p>
+                            <p><strong>Passengers:</strong> {ride.num_passengers}</p>
+                            <Button onClick={() => acceptRide(ride.id)} className="w-full mt-4" variant="secondary">Accept Ride</Button>
+                        </CardContent>
+                    </Card>
+                )) : <p>No new ride requests.</p>}
+            </div>
+        )}
+
+        {currentTab === 'trips' && (
+             <div className="space-y-4">
+                {myTrips.length > 0 ? myTrips.map(ride => {
+                     const rideMessages = messages.filter(m => m.ride_id === ride.id).sort((a,b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+                     return (
+                    <Card key={ride.id}>
+                        <CardContent className="p-4">
+                            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+                                <div>
+                                    <p className="font-bold text-lg">Ride to {ride.dropoff_details}</p>
+                                    <p><strong>Status:</strong> {ride.status}</p>
+                                    <p><strong>Passenger:</strong> {ride.requester_user_id ? users.find(u => u.id === ride.requester_user_id)?.name : ride.guest_name}</p>
+                                </div>
+                                <div className="flex gap-2">
+                                  <Button onClick={ride.is_sharing_location ? () => stopLocationSharing(ride) : () => startLocationSharing(ride)} variant={ride.is_sharing_location ? 'danger' : 'ghost'}>
+                                      {ride.is_sharing_location ? 'Stop Sharing' : 'Share Location'}
+                                  </Button>
+                                  <Button onClick={() => updateTripStatus(ride.id, ride.status)}>{getNextActionText(ride.status)}</Button>
+                                </div>
+                            </div>
+                             {ride.requester_user_id && (
+                                <div className="mt-4 border-t border-gray-200 pt-4">
+                                    <h4 className="font-semibold text-gray-800">Chat with Passenger</h4>
+                                    <div className="space-y-2 my-2 h-48 overflow-y-auto border rounded-md p-2 bg-gray-50">
+                                      {rideMessages.map(msg => (
+                                          <div key={msg.id} className={`flex ${msg.sender_id === user?.id ? 'justify-end' : 'justify-start'}`}>
+                                              <div className={`max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${msg.sender_id === user?.id ? 'bg-primary text-white' : 'bg-gray-200 text-gray-800'}`}>
+                                                  <p className="text-sm">{msg.message_text}</p>
+                                                  <p className={`text-xs mt-1 text-right ${msg.sender_id === user?.id ? 'text-indigo-200' : 'text-gray-500'}`}>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                                              </div>
+                                          </div>
+                                      ))}
+                                    </div>
+                                    <div className="mt-2 space-y-2">
+                                        <Input 
+                                            placeholder="Type a message..."
+                                            value={chatInputs[ride.id] || ''}
+                                            onChange={(e) => handleChatInputChange(ride.id, e.target.value)}
+                                            aria-label={`Chat input for ride to ${ride.dropoff_details}`}
+                                        />
+                                        {isGenerating[ride.id] && <p className="text-sm text-gray-500 animate-pulse">AI is thinking of a reply...</p>}
+                                        {suggestedReplies[ride.id] && !isGenerating[ride.id] && (
+                                            <div className="p-2 bg-primary/10 rounded-md">
+                                                <p className="text-sm text-gray-600">
+                                                    <span className="font-bold text-primary">Suggestion:</span>
+                                                    <button 
+                                                        className="ml-2 text-left text-primary hover:underline italic"
+                                                        onClick={() => applySuggestion(ride.id)}
+                                                        aria-label="Apply suggestion"
+                                                    >
+                                                        "{suggestedReplies[ride.id]}"
+                                                    </button>
+                                                </p>
+                                            </div>
+                                        )}
+                                        <Button 
+                                            size="sm"
+                                            onClick={() => handleSendMessage(ride.id)}
+                                            disabled={!chatInputs[ride.id]?.trim() || isGenerating[ride.id]}
+                                        >
+                                            Send Message
+                                        </Button>
+                                    </div>
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+                )}) : <p>You have no active trips.</p>}
+             </div>
+        )}
+
+        {currentTab === 'activity' && (
+            <Card>
+                <CardHeader><CardTitle>Recent System Activity</CardTitle></CardHeader>
+                <CardContent>
+                    <ul className="divide-y divide-gray-200">
+                        {recentActivity.map(log => (
+                            <li key={log.id} className="py-3">
+                                <p className="text-sm font-medium">{log.event_description}</p>
+                                <p className="text-xs text-gray-500">Ride #{log.ride_id.substring(5,10)} - {new Date(log.created_at).toLocaleTimeString()}</p>
+                            </li>
+                        ))}
+                    </ul>
+                </CardContent>
+            </Card>
+        )}
+      </div>
+
+    </div>
+  );
+};
+
+export default DriverDashboard;
