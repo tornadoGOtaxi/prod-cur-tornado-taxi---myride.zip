@@ -1,6 +1,6 @@
 import React from 'react';
 import Button from '../components/ui/Button';
-import TornadoTaxiLogo from '../components/TornadoTaxiLogo';
+import TornadoGoLogo from '../components/TornadoGoLogo';
 
 interface LandingPageProps {
   navigate: (page: 'request' | 'view' | 'register' | 'signin') => void;
@@ -9,7 +9,7 @@ interface LandingPageProps {
 const LandingPage: React.FC<LandingPageProps> = ({ navigate }) => {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-b from-primary to-primary-dark p-4">
-      <TornadoTaxiLogo className="mb-12" />
+      <TornadoGoLogo className="mb-12" />
 
       <div className="w-full max-w-sm space-y-4">
         <Button

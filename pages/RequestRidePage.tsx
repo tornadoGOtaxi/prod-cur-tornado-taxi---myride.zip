@@ -6,7 +6,7 @@ import { PaymentType, Stop } from '../types';
 import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
 import { Card, CardHeader, CardContent, CardFooter, CardTitle, CardDescription } from '../components/ui/Card';
-import TornadoTaxiLogo from '../components/TornadoTaxiLogo';
+import TornadoGoLogo from '../components/TornadoGoLogo';
 
 interface RequestRidePageProps {
   navigate: (page: 'landing' | 'publicStatus', token?: string) => void;
@@ -78,7 +78,9 @@ const RequestRidePage: React.FC<RequestRidePageProps> = ({ navigate }) => {
         <button onClick={() => navigate('landing')} className="absolute top-4 left-4 text-primary hover:underline">
             &larr; Back to Home
         </button>
-      <TornadoTaxiLogo className="w-20 h-20 mb-4" />
+      <div className="transform scale-75 -mb-4">
+        <TornadoGoLogo />
+      </div>
       <Card className="w-full max-w-2xl">
         <CardHeader>
           <CardTitle>Request a Ride</CardTitle>

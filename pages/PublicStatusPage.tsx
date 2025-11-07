@@ -1,9 +1,10 @@
 
+
 import React, { useState } from 'react';
 import { Ride, User } from '../types';
 import { useData } from '../context/DataContext';
 import { Card, CardHeader, CardContent, CardTitle, CardDescription } from '../components/ui/Card';
-import TornadoTaxiLogo from '../components/TornadoTaxiLogo';
+import TornadoGoLogo from '../components/TornadoGoLogo';
 import { RIDE_STATUS_COLORS } from '../constants';
 import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
@@ -46,7 +47,9 @@ const PublicStatusPage: React.FC<PublicStatusPageProps> = ({ ride, navigate, use
        <button onClick={() => navigate('landing')} className="absolute top-4 left-4 text-primary hover:underline">
         &larr; Back to Home
       </button>
-      <TornadoTaxiLogo className="w-20 h-20 my-8" />
+      <div className="transform scale-75 my-4 -mb-4">
+        <TornadoGoLogo />
+      </div>
       <div className="w-full max-w-2xl mx-auto">
         <Card className="mb-6">
           <CardHeader>

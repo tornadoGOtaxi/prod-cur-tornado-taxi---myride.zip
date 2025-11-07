@@ -30,6 +30,57 @@ const initialData = () => {
     }
 };
 
+// --- CSV and Email Simulation ---
+const objectToCsvRow = (obj: any, headers: string[]): string => {
+    return headers.map(header => {
+        let val = obj[header];
+        if (val === null || val === undefined) val = '';
+        if (typeof val === 'object' && val !== null) val = JSON.stringify(val);
+        const strVal = String(val);
+        if (strVal.includes('"') || strVal.includes(',')) {
+            return `"${strVal.replace(/"/g, '""')}"`;
+        }
+        return strVal;
+    }).join(',');
+};
+
+const convertToCSV = (data: any[]): string => {
+    if (!data || data.length === 0) return '';
+    const headers = Object.keys(data[0]);
+    const headerRow = headers.join(',');
+    const rows = data.map(obj => objectToCsvRow(obj, headers));
+    return [headerRow, ...rows].join('\n');
+};
+
+const sendEmailWithAttachment = (subject: string, body: string, csvData: string, filename: string) => {
+    console.log(`--- SIMULATING EMAIL EXPORT (via Resend) ---`);
+    console.log(`  - To: tornadoGOtaxi@outlook.com`);
+    console.log(`  - Subject: ${subject}`);
+    console.log(`  - Body: ${body}`);
+    console.log(`  - Attachment: ${filename}`);
+    console.log(`--- ATTACHMENT CONTENT ---`);
+    console.log(csvData);
+    console.log(`--- END SIMULATION ---`);
+}
+
+const exportAndEmailUpdate = (tableName: string, action: 'CREATE' | 'UPDATE', data: any) => {
+    const dataArray = Array.isArray(data) ? data : [data];
+    if (dataArray.length === 0) return;
+
+    const timestamp = new Date().toISOString();
+    const subject = `Data ${action}: ${tableName} - ${timestamp}`;
+    const body = `A record in the ${tableName} table was ${action === 'CREATE' ? 'created' : 'updated'}. See attached CSV for details.`;
+    const filename = `${tableName}_${action}_${timestamp.replace(/:/g, '-')}.csv`;
+    
+    try {
+        const csv = convertToCSV(dataArray);
+        if(csv) sendEmailWithAttachment(subject, body, csv, filename);
+    } catch (error) {
+        console.error("Failed to generate CSV or send email simulation:", error);
+    }
+};
+// --- End Simulation ---
+
 interface DataContextType {
   users: User[];
   setUsers: React.Dispatch<React.SetStateAction<User[]>>;
@@ -53,12 +104,12 @@ interface DataContextType {
     addMessage: (messageData: Omit<Message, 'id' | 'created_at'>) => Message;
     toggleRideLocationSharing: (rideId: string, isSharing: boolean) => void;
     updateDriverLocation: (driverId: string, lat: number, lng: number) => void;
+    updateDriverAvailability: (driverId: string, isAvailable: boolean) => void;
   }
 }
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
 
-// FIX: Made children prop optional to resolve TypeScript error in index.tsx.
 export const DataProvider = ({ children }: { children?: ReactNode }) => {
     const [users, setUsers] = useLocalStorage<User[]>('tt_users', initialData().users);
     const [rides, setRides] = useLocalStorage<Ride[]>('tt_rides', initialData().rides);
@@ -72,12 +123,13 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
             const newUser: User = {
                 ...userData,
                 id: `user-${Date.now()}`,
-                password_hash: simpleHash(userData.password_hash), // Hashing here for simulation
+                password_hash: simpleHash(userData.password_hash),
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
                 active: true,
             };
             setUsers(prev => [...prev, newUser]);
+            exportAndEmailUpdate('users', 'CREATE', newUser);
 
             if (newUser.role === UserRole.DRIVER) {
                 const newAvailability: DriverAvailability = {
@@ -85,11 +137,12 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                     driver_id: newUser.id,
                     available_from: null,
                     available_to: null,
-                    is_available_now: false, // Drivers start as unavailable by default.
+                    is_available_now: false,
                     created_at: new Date().toISOString(),
                     updated_at: new Date().toISOString(),
                 };
                 setDriverAvailabilities(prev => [...prev, newAvailability]);
+                exportAndEmailUpdate('driverAvailabilities', 'CREATE', newAvailability);
             }
 
             return newUser;
@@ -105,6 +158,7 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                 updated_at: new Date().toISOString(),
             };
             setRides(prev => [...prev, newRide]);
+            exportAndEmailUpdate('rides', 'CREATE', newRide);
 
             const log: RideActivityLog = {
                 id: `log-${Date.now()}`,
@@ -115,32 +169,34 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                 created_at: new Date().toISOString(),
             };
             setRideActivityLogs(prev => [...prev, log]);
+            exportAndEmailUpdate('rideActivityLogs', 'CREATE', log);
 
-            // Simulate sending emails with Resend
             console.log(`--- SIMULATING EMAIL NOTIFICATIONS FOR RIDE ${newRide.id} (via Resend) ---`);
             const requesterEmail = newRide.guest_email || users.find(u => u.id === newRide.requester_user_id)?.email;
             const publicLink = window.location.origin + `?page=publicStatus&token=${newRide.public_token}`;
             
-            // Email to admin/company
             console.log(`  - To: tornadoGOtaxi@outlook.com | Subject: New Ride Request #${newRide.id.substring(5,10)}`);
             console.log(`    Body: A new ride has been requested from ${newRide.pickup_details} to ${newRide.dropoff_details}.`);
             
-            // Email to passenger
             if (requesterEmail) {
-                console.log(`  - To: ${requesterEmail} | Subject: Your Tornado Taxi Ride is Confirmed!`);
+                console.log(`  - To: ${requesterEmail} | Subject: Your TornadoGO Ride is Confirmed!`);
                 console.log(`    Body: Thank you for booking with us. You can track your ride status here: ${publicLink}`);
             }
-
-            const availableDrivers = driverAvailabilities.filter(da => da.is_available_now).map(da => users.find(u => u.id === da.driver_id)).filter(Boolean);
-            console.log(`Notifying ${availableDrivers.length} available drivers...`);
-            
             console.log(`--- END SIMULATION ---`);
-
 
             return newRide;
         },
         updateRideStatus: (rideId: string, status: RideStatus, actorId: string | null = null) => {
-            setRides(prev => prev.map(r => r.id === rideId ? { ...r, status, updated_at: new Date().toISOString() } : r));
+            let updatedRide: Ride | null = null;
+            setRides(prev => prev.map(r => {
+                if (r.id === rideId) {
+                    updatedRide = { ...r, status, updated_at: new Date().toISOString() };
+                    return updatedRide;
+                }
+                return r;
+            }));
+            if(updatedRide) exportAndEmailUpdate('rides', 'UPDATE', updatedRide);
+
             const log: RideActivityLog = {
                 id: `log-${Date.now()}`,
                 ride_id: rideId,
@@ -150,6 +206,7 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                 created_at: new Date().toISOString(),
             };
             setRideActivityLogs(prev => [...prev, log]);
+            exportAndEmailUpdate('rideActivityLogs', 'CREATE', log);
         },
         assignDriverToRide: (rideId: string, driverId: string, actorId: string | null = null) => {
              const ride = rides.find(r => r.id === rideId);
@@ -158,7 +215,15 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
              const finalDriverId = driverId || null;
              const newStatus = ride.status === RideStatus.REQUESTED && finalDriverId ? RideStatus.ASSIGNED : ride.status;
 
-             setRides(prev => prev.map(r => r.id === rideId ? { ...r, assigned_driver_id: finalDriverId, status: newStatus, updated_at: new Date().toISOString() } : r));
+             let updatedRide: Ride | null = null;
+             setRides(prev => prev.map(r => {
+                if (r.id === rideId) {
+                    updatedRide = { ...r, assigned_driver_id: finalDriverId, status: newStatus, updated_at: new Date().toISOString() };
+                    return updatedRide;
+                }
+                return r;
+             }));
+             if(updatedRide) exportAndEmailUpdate('rides', 'UPDATE', updatedRide);
              
              const driver = users.find(u => u.id === finalDriverId);
              const log: RideActivityLog = {
@@ -170,12 +235,30 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                 created_at: new Date().toISOString(),
             };
             setRideActivityLogs(prev => [...prev, log]);
+            exportAndEmailUpdate('rideActivityLogs', 'CREATE', log);
         },
         updateUser: (userId: string, updates: Partial<Omit<User, 'id'>>) => {
-            setUsers(prev => prev.map(u => u.id === userId ? { ...u, ...updates, updated_at: new Date().toISOString() } : u));
+            let updatedUser: User | null = null;
+            setUsers(prev => prev.map(u => {
+                if (u.id === userId) {
+                    updatedUser = { ...u, ...updates, updated_at: new Date().toISOString() };
+                    return updatedUser;
+                }
+                return u;
+            }));
+            if(updatedUser) exportAndEmailUpdate('users', 'UPDATE', updatedUser);
         },
         cancelRide: (rideId: string, reason: string, actorId: string | null) => {
-            setRides(prev => prev.map(r => r.id === rideId ? { ...r, status: RideStatus.CANCELLED, updated_at: new Date().toISOString() } : r));
+            let updatedRide: Ride | null = null;
+            setRides(prev => prev.map(r => {
+                if (r.id === rideId) {
+                    updatedRide = { ...r, status: RideStatus.CANCELLED, updated_at: new Date().toISOString() };
+                    return updatedRide;
+                }
+                return r;
+            }));
+            if (updatedRide) exportAndEmailUpdate('rides', 'UPDATE', updatedRide);
+
             const log: RideActivityLog = {
                 id: `log-${Date.now()}`,
                 ride_id: rideId,
@@ -185,6 +268,7 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                 created_at: new Date().toISOString(),
             };
             setRideActivityLogs(prev => [...prev, log]);
+            exportAndEmailUpdate('rideActivityLogs', 'CREATE', log);
         },
         addMessage: (messageData: Omit<Message, 'id' | 'created_at'>): Message => {
             const newMessage: Message = {
@@ -193,16 +277,32 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                 created_at: new Date().toISOString(),
             };
             setMessages(prev => [...prev, newMessage]);
+            exportAndEmailUpdate('messages', 'CREATE', newMessage);
             return newMessage;
         },
         toggleRideLocationSharing: (rideId: string, isSharing: boolean) => {
-            setRides(prev => prev.map(r => r.id === rideId ? { ...r, is_sharing_location: isSharing, updated_at: new Date().toISOString() } : r));
+            let updatedRide: Ride | null = null;
+            setRides(prev => prev.map(r => {
+                if (r.id === rideId) {
+                    updatedRide = { ...r, is_sharing_location: isSharing, updated_at: new Date().toISOString() };
+                    return updatedRide;
+                }
+                return r;
+            }));
+            if(updatedRide) exportAndEmailUpdate('rides', 'UPDATE', updatedRide);
         },
         updateDriverLocation: (driverId: string, lat: number, lng: number) => {
             setDriverLocations(prev => {
                 const existing = prev.find(dl => dl.driver_id === driverId);
                 if (existing) {
-                    return prev.map(dl => dl.driver_id === driverId ? { ...dl, last_lat: lat, last_lng: lng, last_updated_at: new Date().toISOString() } : dl);
+                    return prev.map(dl => {
+                        if (dl.driver_id === driverId) {
+                            const updated = { ...dl, last_lat: lat, last_lng: lng, last_updated_at: new Date().toISOString() };
+                            exportAndEmailUpdate('driverLocations', 'UPDATE', updated);
+                            return updated;
+                        }
+                        return dl;
+                    });
                 }
                 const newLocation: DriverLocation = {
                     id: `dl-${Date.now()}`,
@@ -211,8 +311,24 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                     last_lng: lng,
                     last_updated_at: new Date().toISOString(),
                 };
+                exportAndEmailUpdate('driverLocations', 'CREATE', newLocation);
                 return [...prev, newLocation];
             });
+        },
+        updateDriverAvailability: (driverId: string, isAvailable: boolean) => {
+            let updatedAvailability: DriverAvailability | null = null;
+            setDriverAvailabilities(prev =>
+                prev.map(da => {
+                    if (da.driver_id === driverId) {
+                        updatedAvailability = { ...da, is_available_now: isAvailable, updated_at: new Date().toISOString() };
+                        return updatedAvailability;
+                    }
+                    return da;
+                })
+            );
+            if (updatedAvailability) {
+                exportAndEmailUpdate('driverAvailabilities', 'UPDATE', updatedAvailability);
+            }
         },
     };
 

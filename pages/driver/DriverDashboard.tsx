@@ -14,7 +14,7 @@ interface DriverDashboardProps {
 
 const DriverDashboard: React.FC<DriverDashboardProps> = ({ navigate }) => {
   const { user, logout } = useAuth();
-  const { rides, users, rideActivityLogs, driverAvailabilities, setDriverAvailabilities, actions, messages } = useData();
+  const { rides, users, rideActivityLogs, driverAvailabilities, actions, messages } = useData();
   const [currentTab, setCurrentTab] = useState('requests');
   const [chatInputs, setChatInputs] = useState<{ [rideId: string]: string }>({});
   const [suggestedReplies, setSuggestedReplies] = useState<{ [rideId: string]: string }>({});
@@ -25,10 +25,8 @@ const DriverDashboard: React.FC<DriverDashboardProps> = ({ navigate }) => {
   const availability = driverAvailabilities.find(da => da.driver_id === user?.id);
   
   const toggleAvailability = () => {
-    if (!availability) return;
-    setDriverAvailabilities(prev => 
-        prev.map(da => da.id === availability.id ? {...da, is_available_now: !da.is_available_now} : da)
-    );
+    if (!availability || !user) return;
+    actions.updateDriverAvailability(user.id, !availability.is_available_now);
   };
   
   const rideRequests = useMemo(() => rides.filter(r => r.status === RideStatus.REQUESTED), [rides]);
@@ -273,19 +271,20 @@ const DriverDashboard: React.FC<DriverDashboardProps> = ({ navigate }) => {
                             )}
                         </CardContent>
                     </Card>
-                )}) : <p>You have no active trips.</p>}
+                )
+                }) : <p>You have no active trips.</p>}
              </div>
         )}
 
         {currentTab === 'activity' && (
-            <Card>
+             <Card>
                 <CardHeader><CardTitle>Recent System Activity</CardTitle></CardHeader>
                 <CardContent>
-                    <ul className="divide-y divide-gray-200">
+                    <ul className="space-y-2">
                         {recentActivity.map(log => (
-                            <li key={log.id} className="py-3">
-                                <p className="text-sm font-medium">{log.event_description}</p>
-                                <p className="text-xs text-gray-500">Ride #{log.ride_id.substring(5,10)} - {new Date(log.created_at).toLocaleTimeString()}</p>
+                            <li key={log.id} className="text-sm p-2 border-b">
+                                <span className="font-semibold">{log.event_type.replace(/_/g, ' ')}:</span> {log.event_description}
+                                <span className="text-xs text-gray-500 float-right">{new Date(log.created_at).toLocaleTimeString()}</span>
                             </li>
                         ))}
                     </ul>
@@ -293,7 +292,6 @@ const DriverDashboard: React.FC<DriverDashboardProps> = ({ navigate }) => {
             </Card>
         )}
       </div>
-
     </div>
   );
 };
