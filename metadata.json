@@ -1,5 +1,5 @@
 {
-  "name": "PROD-cur-TornadoGO – myRide",
+  "name": "ProductionReady_myRide",
   "description": "A fully functional taxi booking and ride management web application for TornadoGO, allowing guests and registered users to book rides, and providing dedicated portals for passengers, drivers, and administrators.",
   "requestFramePermissions": [
     "geolocation"
